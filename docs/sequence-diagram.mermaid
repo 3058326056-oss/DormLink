@@ -1,0 +1,60 @@
+sequenceDiagram
+autonumber
+actor U as 用户
+participant ES as EnvSlider (M6 组件)
+participant IX as Index (M6 唯一 Entry)
+participant VM as DormLinkViewModel (M5 纯类)
+participant EP as MockEnvironmentProvider (M3 纯类)
+participant RE as RuleEngine (M1 纯逻辑)
+participant RP as IStateRepository (M4 接口)
+participant PF as Preferences (dormlink_state)
+
+Note over U,PF: ① 调整环境 → 评估 → 冲突裁决 → 写日志 → 持久化
+
+U->>ES: 拖动 Slider（组件内 @State 临时值实时显示）
+Note over ES: 仅 onChangeEnd 提交，拖动过程不写盘（B6）
+ES->>IX: onEnvChange(field, value)
+IX->>VM: onEnvChange(field, value) : void
+VM->>EP: setField(field, value, now)
+EP->>EP: clamp(field, value) 按 7.2 区间钳制
+EP-->>VM: EnvironmentSnapshot（钳制后，updatedAt=now）
+VM->>VM: state.environment = 副本；lastUpdatedAt = now
+VM->>RP: enqueuePersist() → save(AppState) 串行异步链
+RP->>PF: put('app_state', JSON.stringify(state)) + flush()
+VM-->>IX: （void，同步改内存完成）
+IX->>VM: getState()
+VM-->>IX: AppState 副本
+IX->>IX: syncFromModel() 重新赋值全部 @State（V1 触发重绘）
+
+U->>IX: 点击「执行一次评估」
+IX->>VM: await runEvaluation()
+VM->>VM: now = clock()；recordId = idGen()
+VM->>VM: 组装 EvaluateInput { snapshot, rules, devices, sceneId, now, recordId }
+VM->>RE: evaluate(input)
+RE->>RE: 0) 校验三项 isFinite 且在 7.2 区间
+alt 非法快照（NaN / 越界 / 缺字段）
+    RE-->>VM: { 空 record, nextDevices=devices 副本, matchedRuleIds:[], rejected:true }
+    VM->>VM: 不追加 records、不写盘、设备不变
+    VM-->>IX: 返回后 Toast「环境数据非法」（EX-01 / T06）
+else 合法快照
+    RE->>RE: 1) traceConditions() 全部 enabled 规则生成 conditionTraces（含未通过项）
+    RE->>RE: 2) enabled 且全部 passed → matchedRules → 展开 ActionCandidate[]
+    RE->>RE: 3) sortCandidates()：priority DESC → ruleId ASC → actionIndex ASC；全量候选从 1 赋 seq
+    RE->>RE: 4) resolveConflicts()：同 deviceId 首个为 winner，其余 SUPPRESSED + suppressedByRuleId + reason
+    RE->>RE: 4b) winner 同态 NO_CHANGE；异态 APPLY + DeviceChange + 更新 nextDevices
+    RE->>RE: 5) 组装 ExecutionRecord（conditionTraces / entries / deviceChanges / executionOrder / conflictCount）
+    RE-->>VM: EvaluationResult { record, nextDevices, matchedRuleIds, rejected:false }
+    VM->>VM: state.devices = nextDevices；records.push(record)；FIFO 裁剪至 200；lastUpdatedAt = now
+    VM->>RP: await save(state)（关键路径先落盘再反馈，EX-06）
+    RP->>RP: trimRecords() 裁剪后再序列化（B9）
+    RP->>PF: put('app_state', JSON.stringify(state)) + flush()
+    PF-->>RP: ok
+    RP-->>VM: void
+    VM-->>IX: Promise<void> resolve
+    IX->>VM: getState() / getLastResult()
+    VM-->>IX: AppState + EvaluationResult
+    IX->>IX: syncFromModel() → Toast「命中 3 条规则，4 台设备变化，2 处冲突」
+    IX-->>U: 4 张设备卡动画；ResultSummary 摘要；LogsPage 经 @Prop 刷新
+end
+
+Note over U,PF: 兜底：EntryAbility.onBackground() → await vm.flush()（EX-06）

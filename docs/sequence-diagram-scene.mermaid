@@ -1,0 +1,38 @@
+sequenceDiagram
+autonumber
+actor U as 用户 / 验收者
+participant SP as ScenesPage (M6 页签3)
+participant IX as Index (M6)
+participant VM as DormLinkViewModel (M5)
+participant EP as MockEnvironmentProvider (M3)
+participant RE as RuleEngine (M1)
+participant RP as RuleEditPage (M6 路由页)
+participant LP as LogsPage (M6 页签4)
+
+Note over U,LP: ③ 场景演练 + 「发现冲突并调整」复评（B8 / 7.5 / T09 / T12）
+
+U->>SP: 点击场景 A「酷暑高湿夜」→ 加载并演练
+SP->>IX: handleSelectScene('A', resetDevices=true)（默认重置，连续演练开关为 P1 独立开关）
+IX->>VM: selectScene('A', true) : void
+VM->>EP: loadPreset('A', now) → snapshot 32 / 78 / 120
+VM->>VM: devices = DEFAULT_DEVICES 副本（历史 records 保留，不清空）
+VM->>VM: activeSceneId='A'；state.environment = 快照；enqueuePersist()
+VM-->>IX: void → syncFromModel() 滑杆与设备卡刷新
+IX->>VM: await runEvaluation()
+VM->>RE: evaluate(EvaluateInput)
+RE-->>VM: matched=['R3','R2','R1']；entries=6(APPLY4/SUPPRESSED2)；executionOrder=[1,2,3,6]；conflict=2
+VM->>VM: 终态 light=DIM / fan=HIGH / ac=COOL / curtain=HALF；await save()
+VM-->>IX: resolve → Toast「命中 3 条规则，4 台设备变化，2 处冲突」
+U->>LP: 打开日志详情（四分区）
+LP->>LP: 展开 conditionTraces / deviceChanges / executionOrder / 冲突裁决
+LP-->>U: fan、ac 各一条 SUPPRESSED，reason「同设备冲突，R3(80) 优先于 R2(60)」
+
+U->>RP: 点「前往调整该规则」→ router.pushUrl('pages/RuleEditPage', { id:'R2' })
+RP->>VM: toggleRule('R2', false)（校验后更新规则集并写盘）
+RP->>IX: router.back() → 重新评估
+IX->>VM: await runEvaluation()
+VM->>RE: evaluate(EvaluateInput)
+RE-->>VM: matched=['R3','R1']；entries=4 全部 APPLY；conflictCount=0；fan=HIGH
+VM-->>IX: Toast「冲突 0 处，4 条动作全部执行」
+
+Note over U,LP: 备选调整：把 R3.priority 改为 20 → entries=6、conflict=2、fan=LOW、executionOrder=[1,2,3,6]

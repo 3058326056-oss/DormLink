@@ -1,0 +1,340 @@
+classDiagram
+direction TB
+
+%% ==================== M2 数据实体（E1~E11 冻结契约） ====================
+class EnvironmentSnapshot {
+  <<interface E1 pure>>
+  +temperature : number
+  +humidity : number
+  +illuminance : number
+  +updatedAt : number
+}
+
+class DeviceStateMap {
+  <<type E2 = Record~string,string~>>
+  +light : string
+  +fan : string
+  +ac : string
+  +curtain : string
+}
+
+class Condition {
+  <<interface E4 pure>>
+  +field : EnvField
+  +op : CompareOp
+  +threshold : number
+}
+
+class RuleAction {
+  <<interface E5 pure>>
+  +deviceId : string
+  +targetState : string
+}
+
+class Rule {
+  <<interface E3 pure>>
+  +id : string
+  +name : string
+  +enabled : boolean
+  +priority : number
+  +logic : string
+  +conditions : Condition[]
+  +actions : RuleAction[]
+  +createdAt : number
+  +updatedAt : number
+}
+
+class ConditionTrace {
+  <<interface E6 pure>>
+  +ruleId : string
+  +field : string
+  +op : string
+  +threshold : number
+  +actual : number
+  +passed : boolean
+}
+
+class LogEntry {
+  <<interface E7 pure>>
+  +seq : number
+  +ruleId : string
+  +ruleName : string
+  +priority : number
+  +actionIndex : number
+  +deviceId : string
+  +targetState : string
+  +fromState : string
+  +toState : string
+  +status : LogStatus
+  +suppressedByRuleId : string
+  +reason : string
+}
+
+class DeviceChange {
+  <<interface E8 pure>>
+  +deviceId : string
+  +fromState : string
+  +toState : string
+  +ruleId : string
+  +seq : number
+}
+
+class ExecutionRecord {
+  <<interface E9 pure>>
+  +id : string
+  +timestamp : number
+  +sceneId : string
+  +snapshot : EnvironmentSnapshot
+  +matchedRuleIds : string[]
+  +conditionTraces : ConditionTrace[]
+  +entries : LogEntry[]
+  +deviceChanges : DeviceChange[]
+  +executionOrder : number[]
+  +conflictCount : number
+}
+
+class AppState {
+  <<interface E10 pure>>
+  +schemaVersion : number
+  +devices : DeviceStateMap
+  +environment : EnvironmentSnapshot
+  +rules : Rule[]
+  +records : ExecutionRecord[]
+  +activeSceneId : string
+  +lastUpdatedAt : number
+}
+
+class EvaluateInput {
+  <<interface E11 pure>>
+  +snapshot : EnvironmentSnapshot
+  +rules : Rule[]
+  +devices : DeviceStateMap
+  +sceneId : string
+  +now : number
+  +recordId : string
+}
+
+class EvaluationResult {
+  <<interface E11 pure>>
+  +record : ExecutionRecord
+  +nextDevices : DeviceStateMap
+  +matchedRuleIds : string[]
+  +rejected : boolean
+}
+
+class ActionCandidate {
+  <<internal 7.4 pure>>
+  +ruleId : string
+  +ruleName : string
+  +priority : number
+  +actionIndex : number
+  +deviceId : string
+  +targetState : string
+  +seq : number
+}
+
+class ValidationResult {
+  <<interface 5.2 pure>>
+  +valid : boolean
+  +errors : string[]
+}
+
+%% ==================== M1 / M3 / M4 / M5 / M8 服务类 ====================
+class RuleEngine {
+  <<M1 pure 零系统依赖 零装饰器>>
+  +evaluate(input: EvaluateInput) EvaluationResult
+  +compareCondition(c: Condition, snapshot: EnvironmentSnapshot) boolean
+  +traceConditions(rule: Rule, snapshot: EnvironmentSnapshot) ConditionTrace[]
+  +sortCandidates(candidates: ActionCandidate[]) ActionCandidate[]
+  +resolveConflicts(sorted: ActionCandidate[], devices: DeviceStateMap) LogEntry[]
+  +validateRule(rule: Rule) ValidationResult
+}
+
+class Models {
+  <<M2 pure 单一契约源>>
+  +DEVICE_CATALOG : DeviceCatalog
+  +ENV_CATALOG : EnvCatalog
+  +DEFAULT_DEVICES : DeviceStateMap
+  +DEFAULT_ENVIRONMENT : EnvironmentSnapshot
+  +DEFAULT_RULES : Rule[]
+  +PRESET_SCENES : PresetScene[]
+  +DEFAULT_STATE : AppState
+  +SCHEMA_VERSION : number
+  +MAX_RECORDS : number
+  +STORAGE_NAME : string
+  +STORAGE_KEY : string
+  +STORAGE_BACKUP_KEY : string
+}
+
+class MockEnvironmentProvider {
+  <<M3 pure 可注入>>
+  -snapshot : EnvironmentSnapshot
+  +getSnapshot() EnvironmentSnapshot
+  +setField(field: EnvField, value: number, now: number) EnvironmentSnapshot
+  +clamp(field: EnvField, value: number) number
+  +loadPreset(sceneId: string, now: number) EnvironmentSnapshot
+  +reset(now: number) EnvironmentSnapshot
+}
+
+class IStateRepository {
+  <<M4 interface pure>>
+  +load() Promise~AppState~
+  +save(state: AppState) Promise~void~
+  +clearRecords() Promise~void~
+  +readBackup() Promise~string~
+}
+
+class PreferencesStateRepository {
+  <<M4 system 唯一 Kit 依赖>>
+  -context : Context
+  -preferencesName : string
+  +constructor(context: Context)
+  +load() Promise~AppState~
+  +save(state: AppState) Promise~void~
+  +clearRecords() Promise~void~
+  +readBackup() Promise~string~
+  -sanitize(raw: string) SanitizeResult
+}
+
+class InMemoryStateRepository {
+  <<M4 pure 测试替身>>
+  -stored : string
+  -backup : string
+  +seedCorrupt(raw: string) void
+  +load() Promise~AppState~
+  +save(state: AppState) Promise~void~
+  +clearRecords() Promise~void~
+  +readBackup() Promise~string~
+}
+
+class DormLinkViewModel {
+  <<M5 pure 无装饰器>>
+  -state : AppState
+  -repo : IStateRepository
+  -engine : RuleEngine
+  -env : MockEnvironmentProvider
+  -clock : function
+  -idGen : function
+  -pendingSave : Promise~void~
+  +constructor(repo: IStateRepository, engine: RuleEngine, env: MockEnvironmentProvider, clock: function, idGen: function)
+  +restore() Promise~void~
+  +onEnvChange(field: EnvField, value: number) void
+  +runEvaluation() Promise~void~
+  +saveRule(rule: Rule) void
+  +deleteRule(id: string) void
+  +toggleRule(id: string, enabled: boolean) void
+  +selectScene(sceneId: string, resetDevices: boolean) void
+  +clearRecords() Promise~void~
+  +getState() AppState
+  +getLastResult() EvaluationResult
+  +didRestoreFallback() boolean
+  +flush() Promise~void~
+  +setManualDevice(deviceId: string, targetState: string) void
+}
+
+class AppContext {
+  <<M5 pure 模块级单例>>
+  -vm : DormLinkViewModel
+  +setViewModel(vm: DormLinkViewModel) void
+  +getViewModel() DormLinkViewModel
+}
+
+class EntryAbility {
+  <<M8 system 装配与生命周期>>
+  +onCreate(want: Want, launchParam: AbilityConstant.LaunchParam) void
+  +onWindowStageCreate(windowStage: window.WindowStage) void
+  +onBackground() void
+  -bootstrap(stage: window.WindowStage) Promise~void~
+}
+
+%% ==================== M6 UI（统一 V1 装饰器） ====================
+class Index {
+  <<M6 Entry 唯一入口 V1>>
+  +isReady : boolean
+  +devices : DeviceStateMap
+  +environment : EnvironmentSnapshot
+  +rules : Rule[]
+  +records : ExecutionRecord[]
+  +activeSceneId : string
+  +lastResult : EvaluationResult
+  +currentTabIndex : number
+  +syncFromModel() void
+  +handleEnvChange(field: EnvField, value: number) void
+  +handleEvaluate() Promise~void~
+  +handleSelectScene(sceneId: string, reset: boolean) void
+}
+class DashboardPage {
+  <<M6 Component 页签1>>
+}
+class RulesPage {
+  <<M6 Component 页签2>>
+}
+class ScenesPage {
+  <<M6 Component 页签3>>
+}
+class LogsPage {
+  <<M6 Component 页签4>>
+}
+class RuleEditPage {
+  <<M6 Entry 路由页>>
+}
+class LogDetailPage {
+  <<M6 Entry 路由页>>
+}
+class UiComponents {
+  <<M6 Component 共享组件>>
+}
+
+%% ==================== 组合 / 聚合关系 ====================
+Rule "1" *-- "1..*" Condition : conditions
+Rule "1" *-- "1..*" RuleAction : actions
+ExecutionRecord "1" *-- "1" EnvironmentSnapshot : snapshot 原样留档
+ExecutionRecord "1" *-- "1..*" ConditionTrace : conditionTraces
+ExecutionRecord "1" *-- "1..*" LogEntry : entries 按 seq 升序
+ExecutionRecord "1" *-- "0..*" DeviceChange : deviceChanges 仅 APPLY
+AppState "1" *-- "1" DeviceStateMap : devices
+AppState "1" *-- "1" EnvironmentSnapshot : environment
+AppState "1" *-- "0..*" Rule : rules
+AppState "1" *-- "0..200" ExecutionRecord : records FIFO
+EvaluateInput "1" --> "1" EnvironmentSnapshot : snapshot
+EvaluateInput "1" --> "1" DeviceStateMap : devices
+EvaluateInput "1" --> "0..*" Rule : rules
+EvaluationResult "1" --> "1" ExecutionRecord : record
+EvaluationResult "1" --> "1" DeviceStateMap : nextDevices
+
+%% ==================== 依赖 / 实现 / 注入关系 ====================
+RuleEngine ..> Models : 只读常量与类型
+RuleEngine ..> EvaluateInput : 入参
+RuleEngine ..> EvaluationResult : 出参
+RuleEngine ..> ActionCandidate : 展开候选
+RuleEngine ..> LogEntry : resolveConflicts 产出
+RuleEngine ..> ValidationResult : validateRule 产出
+MockEnvironmentProvider ..> Models : ENV_CATALOG / PRESET_SCENES
+MockEnvironmentProvider ..> EnvironmentSnapshot : 产出
+IStateRepository <|.. PreferencesStateRepository : 实现
+IStateRepository <|.. InMemoryStateRepository : 实现 测试替身
+PreferencesStateRepository ..> RuleEngine : validateRule 校验恢复规则
+InMemoryStateRepository ..> RuleEngine : validateRule 校验恢复规则
+DormLinkViewModel o-- IStateRepository : 构造函数注入
+DormLinkViewModel o-- RuleEngine : 构造函数注入
+DormLinkViewModel o-- MockEnvironmentProvider : 构造函数注入
+DormLinkViewModel *-- AppState : 唯一权威状态 SSOT
+AppContext o-- DormLinkViewModel : 持有单例
+EntryAbility ..> PreferencesStateRepository : new context
+EntryAbility ..> DormLinkViewModel : 装配 + await restore
+EntryAbility ..> AppContext : setViewModel
+Index ..> AppContext : getViewModel
+Index ..> IStateRepository : 不经手 由 VM 委托
+Index *-- DashboardPage : Tabs.TabContent
+Index *-- RulesPage : Tabs.TabContent
+Index *-- ScenesPage : Tabs.TabContent
+Index *-- LogsPage : Tabs.TabContent
+DashboardPage ..> UiComponents : DeviceCard / EnvSlider / ResultSummary
+RulesPage ..> UiComponents : RuleRow / Feedback
+ScenesPage ..> UiComponents : Feedback
+LogsPage ..> UiComponents : LogRow / Feedback
+RulesPage ..> RuleEditPage : router.pushUrl
+LogsPage ..> LogDetailPage : router.pushUrl
+LogDetailPage ..> RuleEditPage : 前往调整该规则
+RuleEditPage ..> AppContext : getViewModel
+LogDetailPage ..> AppContext : getViewModel
